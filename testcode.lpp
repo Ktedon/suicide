@@ -1,0 +1,10 @@
+pkg suicide.std.io
+
+accum suicide.std.encryption._
+accum suicide.std.util._._
+
+\ space space0
+
+ \ space space1
+
+// space space2
