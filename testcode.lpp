@@ -9,4 +9,16 @@ accum suicide.std.util._._
 
   \ space space1
 
+    kind identifier ((type -> type) -> (type -> type))
+
 // space space2
+
+  type identifier ((space0.space1.identifier) -> (list int))
+
+  infixr identifier 10
+
+/ space listOps
+
+  type containsSublist (list A -> list A)
+
+  containsSublist (% [_ % _])
