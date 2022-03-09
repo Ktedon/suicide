@@ -1,4 +1,4 @@
-package ktedon.dumbledore
+package ktedon.suicide
 
 import scala.io.Source
 
@@ -10,7 +10,9 @@ import scala.io.Source
     resource.getLines.mkString("\n")
   }
 
-  TokenParsers.namespace.parse(fileContents) match {
-    case Left(i) => println(i.failedAtOffset)
+  // println(fileContents)
+
+  TokenParsers.fileParts.parse(fileContents) match {
+    case Left(i) => println(i)
     case Right(i) => println(i)
   }

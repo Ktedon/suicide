@@ -5,6 +5,8 @@ accum suicide.std.util._._
 
 \ space space0
 
- \ space space1
+  type identifier (type -> type)
+
+  \ space space1
 
 // space space2

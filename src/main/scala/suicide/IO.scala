@@ -1,4 +1,4 @@
-package ktedon.dumbledore
+package ktedon.suicide
 
 import scala.util.control.NonFatal
 
