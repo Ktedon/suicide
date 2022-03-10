@@ -12,10 +12,10 @@ object TokenParsers:
 
   val integer: P1[String] = ((P1.char('-') ~ digit.rep) | digit.rep).string
   val naturalNum: P1[String] = (digit.rep).string
-  val float: P1[String] = (integer ~ P1.char('.') ~ digit.rep).string
+  val float: P1[String] = (integer <* P1.char('.') *> digit.rep).string
   val boolean: P1[String] = (P1.string("#f") | P1.string("#t")).string
-  val atom: P1[String] = (P1.char(':') ~ identifier).string
-  val string: P1[String] = (dquote ~ (
+  val atom: P1[String] = (P1.char(':') *> identifier).string
+  val string: P1[String] = (dquote *> (
     P1.string("\\\"") |
       P1.string("\\\\") |
       (P1.string("\\u") | integer) |
@@ -23,7 +23,7 @@ object TokenParsers:
       P1.charIn(
         "!#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~\n"
       )
-  ).rep0 ~
+  ).rep0 <*
     dquote).string
 
   val nln: P1[String] = (crlf | lf | cr).string
@@ -32,33 +32,33 @@ object TokenParsers:
   // val comment: P1[String] = (nln.unary_!).string
 
   val accumulate: P1[String] = (
-    (P1.string("accum") ~ (wsp | nln).rep ~ identifier ~
-      (P1.char('.') ~ (identifier | P1.char('_'))).rep0).string
+    (P1.string("accum") <* nlnws.rep *> identifier ~
+      (P1.char('.') *> (identifier | P1.char('_'))).rep0).string
   )
 
   val `package`: P1[String] = (
-    (P1.string("pkg") ~ wsp.rep ~ identifier ~
-      (P1.char('.') ~ identifier).rep0).string
+    (P1.string("pkg") <* wsp.rep *> identifier ~
+      (P1.char('.') *> identifier).rep0).string
   ).string
 
   val kind: P1[String] = (
-    P1.string("kind") ~ wsp.rep ~ identifier ~ wsp.rep ~
+    P1.string("kind") <* wsp.rep *> identifier <* wsp.rep *>
       P1.recursive[String](rec =>
-        (P1.char('(') ~ nlnws.rep0 ~ (identifier.repSep(P1.char('.')) | rec)
+        (P1.char('(') <* nlnws.rep0 *> (identifier.repSep(P1.char('.')) | rec)
           .repSep(
-            nlnws.rep ~ P1.string("->") ~ nlnws.rep
-          ) ~ nlnws.rep0 ~ P1.char(')')).string
+            nlnws.rep *> P1.string("->") <* nlnws.rep
+          ) <* nlnws.rep0 *> P1.char(')')).string
       )
   ).string
 
   val `type`: P1[String] = (
-    P1.string("type") ~ wsp.rep ~ identifier ~ wsp.rep ~
+    P1.string("type") <* wsp.rep *> identifier <* wsp.rep *>
       P1.recursive[String](rec =>
-        (P1.char('(') ~ nlnws.rep0 ~ (identifier
+        (P1.char('(') <* nlnws.rep0 *> (identifier
           .repSep(P1.char('.'))
           .repSep(nlnws.rep) | rec).repSep(
-          nlnws.rep ~ P1.string("->") ~ nlnws.rep
-        ) ~ nlnws.rep0 ~ P1.char(')')).string
+          nlnws.rep *> P1.string("->") <* nlnws.rep
+        ) <* nlnws.rep0 *> P1.char(')')).string
       )
   ).string
 
@@ -71,22 +71,18 @@ object TokenParsers:
         P1.string("infixl").backtrack |
         P1.string("infixr").backtrack |
         P1.string("infix").backtrack
-    ) ~ nlnws.rep0 ~ identifier ~ nlnws.rep0 ~ naturalNum
+    ) <* nlnws.rep0 *> identifier <* nlnws.rep0 *> naturalNum
   ).string
 
   val expression: P1[String] = (
     P1.recursive[String](rec =>
-      ((P1.char('[') ~ nlnws.rep0 ~ (
-        rec.rep0
-      ) ~ nlnws.rep0 ~ P1.char(']')) |
-      (P1.char('{') ~ nlnws.rep0 ~ (
-      rec.rep0
-    ) ~ nlnws.rep0 ~ P1.char('}')) |
-    (P1.char('(') ~ nlnws.rep0 ~ identifier ~ nlnws.rep0 ~ (
-      rec.rep0
-    ) ~ nlnws.rep0 ~ P1.char(')')) |
-      float.backtrack | integer | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1.char('_')
-    ).string).rep.between(
+      ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')) |
+      (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')) |
+      (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
+      (P1.char('(') <* nlnws.rep0 *> identifier ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(')')) |
+        float.backtrack | integer | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1.char('_')
+      ).string
+    ).rep.between(
       P1.char('('),
       P1.char(')')
     ).backtrack | P1.string("()")
@@ -106,7 +102,7 @@ object TokenParsers:
 
   val module = P1.recursive[String](rec =>
     ((P1.char('/').rep | P1.char('\\').rep) ~
-      nlnws.rep ~ P1.string("mod") ~ nlnws.rep ~
+      nlnws.rep ~ P1.string("mod") <* nlnws.rep *>
       identifier ~ (moduleContent
         .surroundedBy(nlnws.rep)
         .backtrack | nlnws.rep) ~ rec.rep0).string
@@ -117,15 +113,15 @@ object TokenParsers:
   ).string
 
   val namespace = P1.recursive[String](rec =>
-    ((P1.char('/').rep | P1.char('\\').rep) ~
-      nlnws.rep ~ P1.string("space") ~ nlnws.rep ~
+    ((P1.char('/').rep | P1.char('\\').rep) <*
+      (nlnws.rep ~ P1.string("space") ~ nlnws.rep) *>
       identifier ~ (namespaceContent
         .surroundedBy(nlnws.rep)
         .backtrack | nlnws.rep) ~ rec.rep0).string
   )
 
   val fileHeader: P1[String] = (
-    `package` ~ nln ~ (wsp | nln).rep0 ~
+    `package` ~ nln ~ nlnws.rep0 ~
       (accumulate | nln).rep0 ~ wsp.rep0
   ).string
 
