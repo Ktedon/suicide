@@ -19,8 +19,19 @@ accum suicide.std.util._._
 
 / space listOps
 
-  type containsSublist (list A -> list A)
+  type member (A -> list A)
 
-  containsSublist (% [_ % _])
+  member (% [_ % _])
 
-  
+  # comment
+
+  member (% [_ % _]) :- (
+        (seq ((id "v") = (c 1))
+          (seq ((id "i") = (id "n"))
+            (while ((c 0) > (id "i"))
+              (seq ((id "v") = (id "i") mult (id "i"))
+                ((id "i") = (id "i") minus (c 1))))))
+    and % = %
+  )
+
+   

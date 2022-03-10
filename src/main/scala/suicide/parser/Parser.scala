@@ -5,8 +5,9 @@ import cats.parse.{Parser as P1, Parser0 as P0}
 import cats.parse.*
 
 object TokenParsers:
-
-  val identifier: P1[String] = (alpha ~ (alpha | digit).rep0).string
+  val identifierChar: P1[String] = (alpha | P1.charIn("+-*/<>~,;=!@$^&")).string
+  val identifier: P1[String] =
+    (identifierChar ~ (identifierChar | digit).rep0).string
   val expressionVar: P1[String] = (P1.char('%')).string
   val stringVar: P1[String] = (P1.char('\'') ~ identifier).string
 
@@ -29,7 +30,7 @@ object TokenParsers:
   val nln: P1[String] = (crlf | lf | cr).string
   val nlnws: P1[String] = (crlf | lf | cr | wsp).string
 
-  // val comment: P1[String] = (nln.unary_!).string
+  val comment: P1[String] = (P1.char('#') ~ P1.until0(nln)).string
 
   val accumulate: P1[String] = (
     (P1.string("accum") <* nlnws.rep *> identifier ~
@@ -77,28 +78,54 @@ object TokenParsers:
   val expression: P1[String] = (
     P1.recursive[String](rec =>
       ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')) |
-      (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')) |
-      (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
-      (P1.char('(') <* nlnws.rep0 *> identifier ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(')')) |
-        float.backtrack | integer | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1.char('_')
-      ).string
-    ).rep.between(
-      P1.char('('),
-      P1.char(')')
-    ).backtrack | P1.string("()")
+        (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')) |
+        (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
+        (P1.char('(') <* nlnws.rep0 ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
+          .char(')')) |
+        float.backtrack | integer | comment | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1
+          .char('_')).string
+    ).rep
+      .between(
+        P1.char('('),
+        P1.char(')')
+      )
+      .backtrack | P1.string("()")
+  ).string
+
+  val conditions: P1[String] = (
+    P1.recursive[String](rec =>
+      ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')) |
+        (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')) |
+        (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
+        (P1.char('(') <* nlnws.rep0 ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
+          .char(')')) |
+        float.backtrack | integer | comment | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1.char('_')).string
+    ).rep
+      .repSep(
+        nlnws.rep0 ~ (P1.string("and") | P1.string("or") | P1.string("xor") | P1
+          .string("nand")) ~ nlnws.rep0
+      )
+      .between(
+        P1.char('('),
+        P1.char(')')
+      )
+      .backtrack | P1.string("()")
   ).string
 
   val simplePredicate: P1[String] = (
     identifier ~ nlnws.rep ~ expression
   ).string
 
-  // val predicateClause: P1[String] = (
-  //
-  // ).string
+  val complexPredicate: P1[String] = (
+    simplePredicate ~ nlnws.rep0 ~ P1.string(":-") ~ nlnws.rep0 ~
+      conditions
+  ).string
 
   val moduleContent: P0[String] = (
-    (kind.backtrack | `type`.backtrack | operator.backtrack | simplePredicate.backtrack).repSep0(nlnws.rep)
-  ).string
+    (kind.backtrack | `type`.backtrack | operator.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment)
+      .repSep0(nlnws.rep)
+    )
+    .string
 
   val module = P1.recursive[String](rec =>
     ((P1.char('/').rep | P1.char('\\').rep) ~
@@ -109,8 +136,10 @@ object TokenParsers:
   )
 
   val namespaceContent: P0[String] = (
-    (kind.backtrack | `type`.backtrack | operator.backtrack | module.backtrack | simplePredicate.backtrack).repSep0(nlnws.rep)
-  ).string
+    (kind.backtrack | `type`.backtrack | operator.backtrack | module.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment)
+      .repSep0(nlnws.rep)
+    )
+    .string
 
   val namespace = P1.recursive[String](rec =>
     ((P1.char('/').rep | P1.char('\\').rep) <*
