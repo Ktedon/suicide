@@ -6,17 +6,32 @@ import cats.parse.*
 
 object TokenParsers:
   val identifierChar: P1[String] = (alpha | P1.charIn("+-*/<>~,;=!@$^&")).string
-  val identifier: P1[String] =
-    (identifierChar ~ (identifierChar | digit).rep0).string
-  val expressionVar: P1[String] = (P1.char('%')).string
-  val stringVar: P1[String] = (P1.char('\'') ~ identifier).string
+  val identifier: P1[Identifier] =
+    (identifierChar ~ (identifierChar | digit).rep0).map(v =>
+      Identifier(v.toString)
+    )
+  val expressionVar: P1[ExpressionVar] =
+    ((P1.char('%') ~ identifier).backtrack | P1.char('%')).map(v =>
+      ExpressionVar(v.toString.tail)
+    )
+  val stringVar: P1[StringVar] =
+    ((P1.char('\'') ~ identifier).backtrack | P1.char('\'')).map(v =>
+      StringVar(v.toString.tail)
+    )
 
-  val integer: P1[String] = ((P1.char('-') ~ digit.rep) | digit.rep).string
-  val naturalNum: P1[String] = (digit.rep).string
-  val float: P1[String] = (integer <* P1.char('.') *> digit.rep).string
-  val boolean: P1[String] = (P1.string("#f") | P1.string("#t")).string
-  val atom: P1[String] = (P1.char(':') *> identifier).string
-  val string: P1[String] = (dquote *> (
+  val integer: P1[IntegerVal] =
+    ((P1.char('-') ~ digit.rep) | digit.rep).map(v => IntegerVal(v.toString))
+  val naturalNum: P1[NaturalNum] = (digit.rep).map(v => NaturalNum(v.toString))
+  val float: P1[FloatVal] =
+    ((integer <* P1.char('.')) ~ naturalNum).map(v => FloatVal(v._1, v._2))
+  val boolean: P1[BooleanVal] = (P1.string("#f") | P1.string("#t")).map {
+    _.toString match
+      case "#f" => BooleanVal(false)
+      case _    => BooleanVal(true)
+  }
+  val atom: P1[AtomVal] =
+    (P1.char(':') *> identifier).map(v => AtomVal(v.toString))
+  val string: P1[StringVal] = (dquote *> (
     P1.string("\\\"") |
       P1.string("\\\\") |
       (P1.string("\\u") | integer) |
@@ -25,32 +40,33 @@ object TokenParsers:
         "!#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~\n"
       )
   ).rep0 <*
-    dquote).string
+    dquote).map(v => StringVal(v.toString))
 
   val nln: P1[String] = (crlf | lf | cr).string
   val nlnws: P1[String] = (crlf | lf | cr | wsp).string
-
   val comment: P1[String] = (P1.char('#') ~ P1.until0(nln)).string
 
-  val accumulate: P1[String] = (
-    (P1.string("accum") <* nlnws.rep *> identifier ~
-      (P1.char('.') *> (identifier | P1.char('_'))).rep0).string
+  val accumulate: P1[Accumulate] = (
+    ((P1.string("accum") ~ nlnws.rep) *> (identifier | P1.char('_'))
+      .repSep(P1.char('.'))).map(v => Accumulate(v.map(_.toString)))
   )
 
-  val `package`: P1[String] = (
-    (P1.string("pkg") <* wsp.rep *> identifier ~
-      (P1.char('.') *> identifier).rep0).string
-  ).string
+  val `package`: P1[Package] = (
+    ((P1.string("pkg") ~ wsp.rep) *> (identifier).repSep(P1.char('.'))).string
+  ).map(v => Package(v.map(_.toString)))
 
-  val kind: P1[String] = (
-    P1.string("kind") <* wsp.rep *> identifier <* wsp.rep *>
-      P1.recursive[String](rec =>
-        (P1.char('(') <* nlnws.rep0 *> (identifier.repSep(P1.char('.')) | rec)
+  val kind: P1[KindVal] = (
+    identifier.between((P1.string("kind") ~ wsp.rep), wsp.rep) ~
+      P1.recursive[Kind](rec =>
+        ((identifier.repSep(P1.char('.')) | rec)
           .repSep(
-            nlnws.rep *> P1.string("->") <* nlnws.rep
-          ) <* nlnws.rep0 *> P1.char(')')).string
-      )
-  ).string
+            nlnws.rep ~ P1.string("->") ~ nlnws.rep
+          ))
+          .between(P1.char('(') ~ nlnws.rep0, nlnws.rep0 ~ P1.char(')')).map (v =>
+            KindNode(v)
+          )
+      ).map(v => KindNode(v))
+  ).map(v => KindVal(v._1, v))
 
   val `type`: P1[String] = (
     P1.string("type") <* wsp.rep *> identifier <* wsp.rep *>
@@ -99,7 +115,8 @@ object TokenParsers:
         (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
         (P1.char('(') <* nlnws.rep0 ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
           .char(')')) |
-        float.backtrack | integer | comment | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1.char('_')).string
+        float.backtrack | integer | comment | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1
+          .char('_')).string
     ).rep
       .repSep(
         nlnws.rep0 ~ (P1.string("and") | P1.string("or") | P1.string("xor") | P1
@@ -130,23 +147,19 @@ object TokenParsers:
   val module = P1.recursive[String](rec =>
     ((P1.char('/').rep | P1.char('\\').rep) ~
       nlnws.rep ~ P1.string("mod") <* nlnws.rep *>
-      identifier ~ (moduleContent
-        .surroundedBy(nlnws.rep)
-        .backtrack | nlnws.rep) ~ rec.rep0).string
+      identifier ~ (moduleContent.backtrack | nlnws.rep | rec)).string
   )
 
-  val namespaceContent: P0[String] = (
+  val namespaceContent: P1[String] = (
     (kind.backtrack | `type`.backtrack | operator.backtrack | module.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment)
-      .repSep0(nlnws.rep)
+      .repSep(nlnws.rep)
     )
     .string
 
   val namespace = P1.recursive[String](rec =>
-    ((P1.char('/').rep | P1.char('\\').rep) <*
-      (nlnws.rep ~ P1.string("space") ~ nlnws.rep) *>
-      identifier ~ (namespaceContent
-        .surroundedBy(nlnws.rep)
-        .backtrack | nlnws.rep) ~ rec.rep0).string
+    ((P1.char('/').rep | P1.char('\\').rep) ~
+      (nlnws.rep ~ P1.string("space") ~ nlnws.rep) ~
+      identifier ~ (namespaceContent.backtrack | nlnws.rep | rec).rep).string
   )
 
   val fileHeader: P1[String] = (
