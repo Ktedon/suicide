@@ -5,11 +5,12 @@ import cats.parse.{Parser as P1, Parser0 as P0}
 import cats.parse.*
 
 object TokenParsers:
-  val identifierChar: P1[String] = (alpha | P1.charIn("+-*/<>~,;=!@$^&")).string
+  val identifierChar: P1[String] = (alpha | P1.charIn("+-*/<>~,;=!@$^&|")).string
   val identifier: P1[Identifier] =
     (identifierChar ~ (identifierChar | digit).rep0).map(v =>
       Identifier(v.toString)
     )
+  val path: P1[Path] = (identifier.repSep(P1.char('.'))).map(Path(_))
   val expressionVar: P1[ExpressionVar] =
     ((P1.char('%') ~ identifier).backtrack | P1.char('%')).map(v =>
       ExpressionVar(v.toString.tail)
@@ -42,9 +43,13 @@ object TokenParsers:
   ).rep0 <*
     dquote).map(v => StringVal(v.toString))
 
-  val nln: P1[String] = (crlf | lf | cr).string
-  val nlnws: P1[String] = (crlf | lf | cr | wsp).string
-  val comment: P1[String] = (P1.char('#') ~ P1.until0(nln)).string
+  val nln: P1[Whitespace] = (crlf | lf | cr).map(v => Whitespace(v.toString))
+  val nlnws: P1[Whitespace] =
+    (crlf | lf | cr | wsp).map(v => Whitespace(v.toString))
+  val nlnwsr: P1[Whitespace] = (nlnws.rep).map(v => Whitespace(v.toString))
+  val comment: P1[Token] = (P1.char('#') ~ P1.until0(nln)).map(v => Comment)
+  val underscore: P1[Token] = P1.char('_').map(v => Underscore)
+
 
   val accumulate: P1[Accumulate] = (
     ((P1.string("accum") ~ nlnws.rep) *> (identifier | P1.char('_'))
@@ -55,31 +60,31 @@ object TokenParsers:
     ((P1.string("pkg") ~ wsp.rep) *> (identifier).repSep(P1.char('.'))).string
   ).map(v => Package(v.map(_.toString)))
 
+  // FIX: cases like "kind id ( hello -> ( why -> tho) )"
   val kind: P1[KindVal] = (
     identifier.between((P1.string("kind") ~ wsp.rep), wsp.rep) ~
-      P1.recursive[Kind](rec =>
-        ((identifier.repSep(P1.char('.')) | rec)
-          .repSep(
-            nlnws.rep ~ P1.string("->") ~ nlnws.rep
-          ))
-          .between(P1.char('(') ~ nlnws.rep0, nlnws.rep0 ~ P1.char(')')).map (v =>
-            KindNode(v)
-          )
-      ).map(v => KindNode(v))
-  ).map(v => KindVal(v._1, v))
-
-  val `type`: P1[String] = (
-    P1.string("type") <* wsp.rep *> identifier <* wsp.rep *>
-      P1.recursive[String](rec =>
-        (P1.char('(') <* nlnws.rep0 *> (identifier
-          .repSep(P1.char('.'))
-          .repSep(nlnws.rep) | rec).repSep(
-          nlnws.rep *> P1.string("->") <* nlnws.rep
-        ) <* nlnws.rep0 *> P1.char(')')).string
+      P1.recursive[KindNode](rec =>
+        (
+          path.map(KindLeaf(_)) | rec
+        ).repSep(nlnwsr ~ P1.string("->") ~ nlnwsr)
+          .between(P1.char('(') ~ nlnws.rep0, nlnws.rep0 ~ P1.char(')'))
+          .map(v => KindNode(v.toList))
       )
-  ).string
+  ).map(v => KindVal(v._1, v._2))
 
-  val operator: P1[String] = (
+  // FIX: cases like "type id ( hello -> ( why -> tho) )"
+  val `type`: P1[TypeVal] = (
+    identifier.between((P1.string("type") ~ wsp.rep), wsp.rep) ~
+    P1.recursive[TypeNode](rec =>
+      (
+        path.map(TypeLeaf(_)) | rec
+      ).repSep(nlnwsr).map(ConstructedType(_)).repSep(nlnwsr ~ P1.string("->") ~ nlnwsr)
+        .between(P1.char('(') ~ nlnws.rep0, nlnws.rep0 ~ P1.char(')'))
+        .map(v => TypeNode(v.toList))
+    )
+  ).map(v => TypeVal(v._1, v._2))
+
+  val operator: P1[Operator] = (
     (
       P1.string("prefix").backtrack |
         P1.string("prefixr").backtrack |
@@ -88,78 +93,89 @@ object TokenParsers:
         P1.string("infixl").backtrack |
         P1.string("infixr").backtrack |
         P1.string("infix").backtrack
-    ) <* nlnws.rep0 *> identifier <* nlnws.rep0 *> naturalNum
-  ).string
+    ).string ~ identifier.surroundedBy(nlnws.rep0) ~ naturalNum
+  ).map { v =>
+    val fixity = v._1._1 match
+      case "prefix" => Prefix
+      case "prefixr" => Prefixr
+      case "postfixl" => Postfixl
+      case "postfix" => Postfix
+      case "infixl" => Infixl
+      case "infixr" => Infixr
+      case "infix" => Infix
+    Operator(fixity, v._1._2, v._2)
+  }
 
-  val expression: P1[String] = (
-    P1.recursive[String](rec =>
-      ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')) |
-        (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')) |
-        (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
-        (P1.char('(') <* nlnws.rep0 ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
-          .char(')')) |
-        float.backtrack | integer | comment | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1
-          .char('_')).string
+  val expression: P1[ExpressionVal] = (
+    P1.recursive[Expression](rec =>
+      ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')).map(v => ExpressionList(v._1._2)) |
+        (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')).map(v => ExpressionTuple(v._1._2)) |
+        (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')).map(v => ExpressionSet(v._1._2)) |
+        (P1.char('(') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
+          .char(')')).map(v => ExpressionNode(v._1._2)) |
+        float.map(ExpressionLeaf(_)).backtrack | integer.map(ExpressionLeaf(_)) | comment.map(ExpressionLeaf(_)) | boolean.map(ExpressionLeaf(_)) | atom.map(ExpressionLeaf(_)) | string.map(ExpressionLeaf(_)) | identifier.map(ExpressionLeaf(_)) | nlnwsr.map(ExpressionLeaf(_)) | expressionVar.map(ExpressionLeaf(_)) | stringVar.map(ExpressionLeaf(_)) | underscore.map(ExpressionLeaf(_)))
     ).rep
       .between(
         P1.char('('),
         P1.char(')')
-      )
-      .backtrack | P1.string("()")
-  ).string
+      ).map(v => ExpressionNode(v.toList))
+      .backtrack | P1.string("()").map(v => ExpressionNode(List.empty))
+  ).map(v => ExpressionVal(v))
 
-  val conditions: P1[String] = (
-    P1.recursive[String](rec =>
-      ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')) |
-        (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')) |
-        (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')) |
-        (P1.char('(') <* nlnws.rep0 ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
-          .char(')')) |
-        float.backtrack | integer | comment | boolean | atom | string | identifier | nlnws.rep | expressionVar | stringVar | P1
-          .char('_')).string
+
+  val conditions: P1[ConditionVal] = {
+    val condition = P1.recursive[Condition](rec =>
+      ((P1.char('[') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char(']')).map(v => ConditionList(v._1._2)) |
+        (P1.char('{') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('}')).map(v => ConditionTuple(v._1._2)) |
+        (P1.char('<') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1.char('>')).map(v => ConditionSet(v._1._2)) |
+        (P1.char('(') ~ rec.rep0.surroundedBy(nlnws.rep0) ~ P1
+          .char(')')).map(v => ConditionNode(v._1._2)) |
+        float.map(ConditionLeaf(_)).backtrack | integer.map(ConditionLeaf(_)) | comment.map(ConditionLeaf(_)) | boolean.map(ConditionLeaf(_)) | atom.map(ConditionLeaf(_)) | string.map(ConditionLeaf(_)) | identifier.map(ConditionLeaf(_)) | nlnwsr.map(ConditionLeaf(_)) | expressionVar.map(ConditionLeaf(_)) | stringVar.map(ConditionLeaf(_)) | underscore.map(ConditionLeaf(_)))
     ).rep
-      .repSep(
-        nlnws.rep0 ~ (P1.string("and") | P1.string("or") | P1.string("xor") | P1
-          .string("nand")) ~ nlnws.rep0
+    val conditionOperator = (P1.string("and") | P1.string("or") | P1.string("xor") | P1
+      .string("nand")).surroundedBy(nlnws.rep0).string.map(
+        _ match
+          case "and" => And
+          case "or" => Or
+          case "xor" => Xor
+          case "nand" => Nand
       )
+
+    (condition ~ (conditionOperator ~ condition).rep0)
       .between(
         P1.char('('),
         P1.char(')')
-      )
-      .backtrack | P1.string("()")
-  ).string
+      ).map(v => ConditionVal(Some(v)))
+      .backtrack | P1.string("()").map(v => ConditionVal(None))
+  }
 
-  val simplePredicate: P1[String] = (
+  val simplePredicate: P1[SimplePredicate] = (
     identifier ~ nlnws.rep ~ expression
-  ).string
+  ).map(v => SimplePredicate(v._1._1, v._2))
 
-  val complexPredicate: P1[String] = (
-    simplePredicate ~ nlnws.rep0 ~ P1.string(":-") ~ nlnws.rep0 ~
+  val complexPredicate: P1[ComplexPredicate] = (
+    simplePredicate ~ (nlnws.rep0 ~ P1.string(":-") ~ nlnws.rep0) ~
       conditions
-  ).string
+  ).map(v => ComplexPredicate(v._1._1, v._2))
 
-  val moduleContent: P0[String] = (
-    (kind.backtrack | `type`.backtrack | operator.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment)
-      .repSep0(nlnws.rep)
-    )
-    .string
+  val moduleContent: P1[ModuleContent] = (
+    kind.backtrack | `type`.backtrack | operator.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment
+  ).repSep(nlnwsr).map(v => ModuleContent(v))
 
-  val module = P1.recursive[String](rec =>
-    ((P1.char('/').rep | P1.char('\\').rep) ~
-      nlnws.rep ~ P1.string("mod") <* nlnws.rep *>
-      identifier ~ (moduleContent.backtrack | nlnws.rep | rec)).string
+  val module = P1.recursive[ModuleNode](rec =>
+    ((P1.char('/').rep | P1.char('\\').rep).string ~
+      (nlnws.rep ~ P1.string("mod") <* nlnws.rep) ~
+      identifier ~ (moduleContent.backtrack | nlnwsr | rec).rep).map(v => ModuleNode(v._1._1._1, v._1._2, v._2))
   )
 
-  val namespaceContent: P1[String] = (
-    (kind.backtrack | `type`.backtrack | operator.backtrack | module.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment)
-      .repSep(nlnws.rep)
-    )
-    .string
+  val namespaceContent: P1[NamespaceContent] = (
+    kind.backtrack | `type`.backtrack | operator.backtrack | module.backtrack | complexPredicate.backtrack | simplePredicate.backtrack | comment
+  ).repSep(nlnwsr).map(v => NamespaceContent(v))
 
-  val namespace = P1.recursive[String](rec =>
-    ((P1.char('/').rep | P1.char('\\').rep) ~
-      (nlnws.rep ~ P1.string("space") ~ nlnws.rep) ~
-      identifier ~ (namespaceContent.backtrack | nlnws.rep | rec).rep).string
+  val namespace = P1.recursive[NamespaceNode](rec =>
+    ((P1.char('/').rep | P1.char('\\').rep).string ~
+      P1.string("space").surroundedBy(nlnwsr) ~
+      identifier ~ (namespaceContent.backtrack | nlnwsr | rec).rep).map(v => NamespaceNode(v._1._1._1, v._1._2, v._2))
   )
 
   val fileHeader: P1[String] = (
